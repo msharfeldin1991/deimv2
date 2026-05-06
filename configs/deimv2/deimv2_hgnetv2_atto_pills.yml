@@ -1,0 +1,154 @@
+__include__: [
+  '../runtime.yml',
+  '../base/dataloader.yml',
+  '../base/optimizer.yml',
+  '../base/deimv2.yml',
+]
+
+# ── Output ────────────────────────────────────────────────────────────────────
+output_dir: ./outputs/deimv2_atto_pills
+
+# ── Dataset ───────────────────────────────────────────────────────────────────
+task: detection
+
+num_classes: 3              # pills, capsules, tablets  (seblful/pills-detection-s9ywn)
+remap_mscoco_category: False  # our IDs are 1=tablet 2=capsule, not COCO-80
+
+evaluator:
+  type: CocoEvaluator
+  iou_types: ['bbox']
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: ./data/pills/train2017/
+    ann_file:   ./data/pills/annotations/instances_train2017.json
+    return_masks: False
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: True
+  num_workers: 4
+  drop_last: True
+  total_batch_size: 16       # reduced from 128 — safe for 8 GB RAM / CPU
+  collate_fn:
+    type: BatchImageCollateFunction
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: ./data/pills/val2017/
+    ann_file:   ./data/pills/annotations/instances_val2017.json
+    return_masks: False
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: False
+  num_workers: 4
+  drop_last: False
+  total_batch_size: 16
+  collate_fn:
+    type: BatchImageCollateFunction
+
+# ── Backbone ──────────────────────────────────────────────────────────────────
+DEIM:
+  encoder: LiteEncoder
+
+HGNetv2:
+  name: 'Atto'
+  return_idx: [2]
+  freeze_at: -1
+  freeze_norm: False
+  use_lab: True
+
+LiteEncoder:
+  in_channels: [256]
+  feat_strides: [16]
+  hidden_dim: 64
+  expansion: 0.34
+  depth_mult: 0.5
+  act: 'silu'
+
+DEIMTransformer:
+  feat_channels: [64, 64]
+  feat_strides: [16, 32]
+  hidden_dim: 64
+  num_levels: 2
+  num_points: [4, 2]
+  num_layers: 3
+  eval_idx: -1
+  num_queries: 100
+  dim_feedforward: 160
+  share_bbox_head: True
+  use_gateway: False
+
+# ── Fine-tuning schedule (72 epochs, 10x lower LR than scratch) ───────────────
+epoches: 72
+
+warmup_iter: 500            # shorter warmup for fine-tuning
+flat_epoch: 36              # 4 + 72/2
+no_aug_epoch: 8
+lr_gamma: 0.5
+
+optimizer:
+  type: AdamW
+  params:
+    - params: '^(?=.*backbone)(?!.*norm|bn).*$'
+      lr: 0.0001             # 10x lower than from-scratch
+    - params: '^(?=.*backbone)(?=.*norm|bn).*$'
+      lr: 0.0001
+      weight_decay: 0.
+    - params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0002
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+eval_spatial_size: [320, 320]
+
+train_dataloader:
+  total_batch_size: 16
+  dataset:
+    transforms:
+      ops:
+        - {type: Mosaic, output_size: 160, rotation_range: 10, translation_range: [0.1, 0.1], scaling_range: [0.5, 1.5],
+           probability: 1.0, fill_value: 0, use_cache: True, max_cached_images: 50, random_pop: True}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: SanitizeBoundingBoxes, min_size: 8}
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [320, 320]}
+        - {type: SanitizeBoundingBoxes, min_size: 8}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        epoch: [4, 36, 60]
+      mosaic_prob: 0.3
+  collate_fn:
+    mixup_prob: 0.0
+    mixup_epochs: [40000, 15000]
+    copyblend_prob: 0.0
+    copyblend_epochs: [40000, 15000]
+    stop_epoch: 64
+    ema_restart_decay: 0.9999
+    base_size: 320
+    base_size_repeat: ~
+
+val_dataloader:
+  total_batch_size: 16
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [320, 320]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+  shuffle: False
+  num_workers: 4
+
+DEIMCriterion:
+  losses: ['mal', 'boxes']
+  use_uni_set: False
+  matcher:
+    matcher_change_epoch: 64
