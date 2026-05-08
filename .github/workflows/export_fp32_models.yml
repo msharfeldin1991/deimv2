@@ -21,7 +21,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
-          pip install ultralytics onnx onnxruntime gdown
+          pip install ultralytics onnx onnxruntime gdown tensorboard
           pip install PyYAML scipy calflops transformers "faster-coco-eval>=1.6.7"
 
       - name: Export YOLOv8n float32 ONNX
