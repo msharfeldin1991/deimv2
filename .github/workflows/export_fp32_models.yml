@@ -1,0 +1,64 @@
+name: Export Float32 ONNX Models
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install ultralytics onnx onnxruntime gdown
+          pip install PyYAML scipy calflops transformers "faster-coco-eval>=1.6.7"
+
+      - name: Export YOLOv8n float32 ONNX
+        run: |
+          cat > /tmp/yolo_export.py << 'PYEOF'
+          from ultralytics import YOLO
+          import os
+          model = YOLO('yolov8n.pt')
+          model.export(format='onnx', imgsz=640, opset=17, simplify=False, dynamic=False)
+          os.rename('yolov8n.onnx', 'yolov8n_fp32.onnx')
+          size = os.path.getsize('yolov8n_fp32.onnx')
+          print('yolov8n_fp32.onnx: %.1f MB' % (size / 1e6))
+          PYEOF
+          python /tmp/yolo_export.py
+
+      - name: Download DEIMv2-N pretrained checkpoint
+        run: |
+          gdown 1G_Q80EVO4T7LZVPfHwZ3sT65FX5egp9K -O deimv2_n_coco_fp32.pth
+          ls -lh deimv2_n_coco_fp32.pth
+
+      - name: Export DEIMv2-N float32 ONNX
+        run: |
+          python tools/deployment/export_onnx.py \
+            -c configs/deimv2/deimv2_hgnetv2_n_coco.yml \
+            -r deimv2_n_coco_fp32.pth \
+            --check
+          ls -lh deimv2_n_coco_fp32.onnx
+
+      - name: Verify outputs
+        run: ls -lh yolov8n_fp32.onnx deimv2_n_coco_fp32.onnx
+
+      - name: Commit and push float32 models
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add yolov8n_fp32.onnx deimv2_n_coco_fp32.onnx
+          git commit -m "feat: add float32 ONNX models for Android ORT compatibility"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
